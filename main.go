@@ -11,8 +11,8 @@ import (
 // Item — это то, что мы храним.
 // Теги `json:"..."` объясняют Go, как превращать это в JSON и обратно.
 type Item struct {
-	Value     string `json:"value"`
-	ExpiresAt int64  `json:"expires_at"` // Unix nano timestamp
+	Value     any   `json:"value"`
+	ExpiresAt int64 `json:"expires_at"` // Unix nano timestamp
 }
 
 // Storage — наше ядро.
@@ -33,12 +33,11 @@ func NewStorage() *Storage {
 }
 
 // Set — запись данных (требует полной блокировки Lock)
-func (s *Storage) Set(key string, value string, ttlSeconds int) {
-	// Вычисляем время смерти
+func (s *Storage) Set(key string, value any, ttlSeconds int) {
 	expires := time.Now().Add(time.Duration(ttlSeconds) * time.Second).UnixNano()
 
-	s.mu.Lock()         // <--- ЗАКРЫВАЕМ ВСЕМ ДОСТУП
-	defer s.mu.Unlock() // <--- ЗАПЛАНИРОВАЛИ ОТКРЫТИЕ
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	s.items[key] = Item{
 		Value:     value,
@@ -82,24 +81,58 @@ func (s *Storage) StartCleanup(interval time.Duration) {
 	go func() {
 		// Цикл будет висеть тут и ждать "тика" от ticker.C
 		for range ticker.C {
-			s.cleanup()
+			s.cleanupProbabilistic()
 		}
 	}()
 }
 
-// cleanup — внутренняя функция, пробегает по мапе и удаляет старье
-func (s *Storage) cleanup() {
-	now := time.Now().UnixNano()
+// cleanupProbabilistic — Реализация алгоритма вероятностной очистки.
+// НЕ удаляет всё сразу, а щиплет по кусочкам, чтобы не грузить CPU
+func (s *Storage) cleanupProbabilistic() {
+	// Константы алгоритма
+	const sampleSize = 20
+	const maxExpiredPercentage = 25 // Если > 25% протухло, повторяем
 
-	s.mu.Lock() // Блокируем ВСЁ хранилище на время уборки
-	defer s.mu.Unlock()
+	for {
+		expiredCount := 0
+		processedCount := 0
+		now := time.Now().UnixNano()
 
-	// Пробегаем по всей мапе
-	for key, item := range s.items {
-		if now > item.ExpiresAt {
-			delete(s.items, key)
-			fmt.Printf("🧹 Janitor: удалил протухший ключ '%s'\n", key)
+		s.mu.Lock() // Блокируем на короткое время выборки
+
+		// В Go итерация по мапе рандомная.
+		// range по мапе — это и есть случайная выборка.
+		for key, item := range s.items {
+			if processedCount >= sampleSize {
+				break
+			}
+
+			if now > item.ExpiresAt {
+				delete(s.items, key)
+				expiredCount++
+			}
+			processedCount++
 		}
+
+		s.mu.Unlock() // Быстро разблокируем
+
+		// Логирование для наглядности (можно убрать в проде)
+		if expiredCount > 0 {
+			fmt.Printf("🧹 Janitor: проверил %d ключей, удалил %d\n", processedCount, expiredCount)
+		}
+
+		// Если мы проверили меньше чем sampleSize (мапа почти пустая), выходим
+		if processedCount < sampleSize {
+			break
+		}
+
+		// Вычисляем процент мусора
+		// Если expiredCount (например 6) > 25% от 20 (это 5) — значит мусора много
+		// Повторяем цикл СРАЗУ ЖЕ, не дожидаясь тикера
+		if expiredCount*100/sampleSize <= maxExpiredPercentage {
+			break
+		}
+		// Если дошли сюда — loop повторяется
 	}
 }
 
@@ -139,7 +172,7 @@ func main() {
 		// Временная структурка, чтобы распарсить входящий JSON
 		var req struct {
 			Key   string `json:"key"`
-			Value string `json:"value"`
+			Value any    `json:"value"`
 			TTL   int    `json:"ttl"`
 		}
 
