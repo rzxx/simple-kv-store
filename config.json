@@ -1,0 +1,25 @@
+{
+  "server": {
+    "port": ":8080",
+    "log_level": 2
+  },
+  "cleanup": {
+    "enabled": true,
+    "interval_seconds": 5,
+    "mode": "probabilistic",
+    "probabilistic_settings": {
+      "sample_size": 20,
+      "threshold_percent": 25
+    }
+  },
+  "upstream": {
+    "enabled": false,
+    "url": "https://jsonplaceholder.typicode.com/todos",
+    "default_ttl_seconds": 60
+  },
+  "persistence": {
+    "enabled": true,
+    "filename": "dump.json",
+    "save_interval_seconds": 60
+  }
+}
