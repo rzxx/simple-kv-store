@@ -1,7 +1,7 @@
 {
   "server": {
     "port": ":8080",
-    "log_level": 2
+    "log_level": 1
   },
   "cleanup": {
     "enabled": true,
